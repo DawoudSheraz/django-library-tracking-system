@@ -1,17 +1,20 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
+from rest_framework.pagination import PageNumberPagination
 from .models import Author, Book, Member, Loan
 from .serializers import AuthorSerializer, BookSerializer, MemberSerializer, LoanSerializer
 from rest_framework.decorators import action
 from django.utils import timezone
 from .tasks import send_loan_notification
 
+from datetime import datetime, timezone, timedelta
+
 class AuthorViewSet(viewsets.ModelViewSet):
     queryset = Author.objects.all()
     serializer_class = AuthorSerializer
 
 class BookViewSet(viewsets.ModelViewSet):
-    queryset = Book.objects.all()
+    queryset = Book.objects.select_related('author').prefetch_related('loans', 'loans__member__user')
     serializer_class = BookSerializer
 
     @action(detail=True, methods=['post'])
@@ -52,3 +55,20 @@ class MemberViewSet(viewsets.ModelViewSet):
 class LoanViewSet(viewsets.ModelViewSet):
     queryset = Loan.objects.all()
     serializer_class = LoanSerializer
+    page_size_query_param = 'page_size'
+
+    @action(detail=True, methods=['post'])
+    def extend_due_date(self, request, pk=None):
+        loan = self.get_object()
+        additional_days = int(request.data.get('additional_days'))
+
+        if additional_days <= 0:
+            return Response({'error': 'Extension should be greater than 0'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not loan.is_returned and loan.due_date < datetime.now(tz=timezone.utc).date():
+            return Response({'error': 'Unable to extend an overdue book'}, status=status.HTTP_400_BAD_REQUEST)
+
+        loan.due_date += timedelta(days=additional_days)
+        loan.save()
+
+        return Response({'data': LoanSerializer(loan).data}, status=status.HTTP_200_OK)
