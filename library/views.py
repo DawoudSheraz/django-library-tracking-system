@@ -1,13 +1,14 @@
-from rest_framework import viewsets, status
-from rest_framework.response import Response
-from rest_framework.pagination import PageNumberPagination
-from .models import Author, Book, Member, Loan
-from .serializers import AuthorSerializer, BookSerializer, MemberSerializer, LoanSerializer
-from rest_framework.decorators import action
-from django.utils import timezone
-from .tasks import send_loan_notification
-
 from datetime import datetime, timezone, timedelta
+
+from django.utils import timezone
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+
+from library.models import Author, Book, Member, Loan
+from library.serializers import AuthorSerializer, BookSerializer, MemberSerializer, LoanSerializer, ExtendDueDateSerializer
+from library.tasks import send_loan_notification
+
 
 class AuthorViewSet(viewsets.ModelViewSet):
     queryset = Author.objects.all()
@@ -59,16 +60,20 @@ class LoanViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def extend_due_date(self, request, pk=None):
-        loan = self.get_object()
-        additional_days = int(request.data.get('additional_days'))
+        loan: Loan = self.get_object()
+        additional_days_serializer = ExtendDueDateSerializer(data=request.data)
 
-        if additional_days <= 0:
-            return Response({'error': 'Extension should be greater than 0'}, status=status.HTTP_400_BAD_REQUEST)
+        if not additional_days_serializer.is_valid():
+            return Response({'error': additional_days_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        if loan.is_returned:
+            return Response({'error': 'Unable to extend a returned book'}, status=status.HTTP_400_BAD_REQUEST)
 
         if not loan.is_returned and loan.due_date < datetime.now(tz=timezone.utc).date():
             return Response({'error': 'Unable to extend an overdue book'}, status=status.HTTP_400_BAD_REQUEST)
 
-        loan.due_date += timedelta(days=additional_days)
+
+        loan.due_date += timedelta(days=additional_days_serializer.data['additional_days'])
         loan.save()
 
         return Response({'data': LoanSerializer(loan).data}, status=status.HTTP_200_OK)
